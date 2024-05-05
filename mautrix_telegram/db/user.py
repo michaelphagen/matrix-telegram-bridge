@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING, ClassVar, Iterable
 from asyncpg import Record
 from attr import dataclass
 
-from mautrix.types import UserID
+from mautrix.types import UserID, RoomID
 from mautrix.util.async_db import Connection, Database, Scheme
 
 from ..types import TelegramID
@@ -40,6 +40,7 @@ class User:
     is_bot: bool
     is_premium: bool
     saved_contacts: int
+    space_mxid: RoomID | None
 
     @classmethod
     def _from_row(cls, row: Record | None) -> User | None:
@@ -48,7 +49,16 @@ class User:
         return cls(**row)
 
     columns: ClassVar[str] = ", ".join(
-        ("mxid", "tgid", "tg_username", "tg_phone", "is_bot", "is_premium", "saved_contacts")
+        (
+            "mxid",
+            "tgid",
+            "tg_username",
+            "tg_phone",
+            "is_bot",
+            "is_premium",
+            "saved_contacts",
+            "space_mxid",
+        )
     )
 
     @classmethod
@@ -98,20 +108,21 @@ class User:
             self.is_bot,
             self.is_premium,
             self.saved_contacts,
+            self.space_mxid,
         )
 
     async def save(self, conn: Connection | None = None) -> None:
         q = """
         UPDATE "user" SET tgid=$2, tg_username=$3, tg_phone=$4, is_bot=$5, is_premium=$6,
-                          saved_contacts=$7
+                        saved_contacts=$7, space_mxid=$8
         WHERE mxid=$1
         """
         await (conn or self.db).execute(q, *self._values)
 
-    async def insert(self) -> None:
+    async def insert(self) -> None:          
         q = """
-        INSERT INTO "user" (mxid, tgid, tg_username, tg_phone, is_bot, is_premium, saved_contacts)
-        VALUES ($1, $2, $3, $4, $5, $6, $7)
+        INSERT INTO "user" (mxid, tgid, tg_username, tg_phone, is_bot, is_premium, saved_contacts, space_mxid)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         """
         await self.db.execute(q, *self._values)
 

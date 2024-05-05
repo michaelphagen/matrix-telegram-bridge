@@ -63,7 +63,7 @@ from mautrix.appservice import DOUBLE_PUPPET_SOURCE_KEY
 from mautrix.bridge import BaseUser, async_getter_lock
 from mautrix.client import Client
 from mautrix.errors import MatrixRequestError, MNotFound
-from mautrix.types import PushActionType, PushRuleKind, PushRuleScope, RoomID, RoomTagInfo, UserID
+from mautrix.types import EventType, PushActionType, PushRuleKind, PushRuleScope, RoomID, RoomTagInfo, UserID
 from mautrix.util import background_task
 from mautrix.util.bridge_state import BridgeState, BridgeStateEvent
 from mautrix.util.opt_prometheus import Gauge
@@ -122,6 +122,7 @@ class User(DBUser, AbstractUser, BaseUser):
         is_bot: bool = False,
         is_premium: bool = False,
         saved_contacts: int = 0,
+        space_mxid: RoomID | None = None,
     ) -> None:
         super().__init__(
             mxid=mxid,
@@ -131,6 +132,7 @@ class User(DBUser, AbstractUser, BaseUser):
             is_bot=is_bot,
             is_premium=is_premium,
             saved_contacts=saved_contacts,
+            space_mxid=space_mxid,
         )
         AbstractUser.__init__(self)
         BaseUser.__init__(self)
@@ -376,7 +378,7 @@ class User(DBUser, AbstractUser, BaseUser):
                 await puppet.switch_mxid(access_token="auto", mxid=self.mxid)
         except Exception:
             self.log.exception("Failed to automatically enable custom puppet")
-
+        await self.create_or_update_space()
         if not self.is_bot and (self.config["bridge.startup_sync"] or first_login):
             try:
                 self._is_backfilling = True
@@ -634,6 +636,64 @@ class User(DBUser, AbstractUser, BaseUser):
             self.log.info("User telegram ID cleared")
         self._track_metric(METRIC_LOGGED_IN, False)
         return ok
+
+# Spaces support
+
+    async def create_or_update_space(self):
+        if not self.config["bridge.space_support.enable"]:
+            return
+
+        avatar_state_event_content = {"url": self.config["appservice.bot_avatar"]}
+        name_state_event_content = {"name": self.config["bridge.space_support.name"]}
+
+        if self.space_mxid:
+            await self.az.intent.send_state_event(
+                self.space_mxid, EventType.ROOM_AVATAR, avatar_state_event_content
+            )
+            await self.az.intent.send_state_event(
+                self.space_mxid, EventType.ROOM_NAME, name_state_event_content
+            )
+        else:
+            self.log.debug(
+                f"Creating space for {self.tgid}, inviting {self.mxid}"
+            )
+            room = await self.az.intent.create_room(
+                is_direct=False,
+                invitees=[self.mxid],
+                creation_content={"type": "m.space"},
+                initial_state=[
+                    {
+                        "type": str(EventType.ROOM_NAME),
+                        "content": name_state_event_content,
+                    },
+                    {
+                        "type": str(EventType.ROOM_AVATAR),
+                        "content": avatar_state_event_content,
+                    },
+                ],
+            )
+            # Allow room creation in space
+            await self.az.intent.send_state_event(
+                room, EventType.ROOM_POWER_LEVELS, {"users_default": 100, "events_default": 0}
+            )
+            
+            # Add space_mxid to self
+            self.space_mxid = room
+            await self.save()
+            self.log.debug(f"Created space {room}")
+            try:
+                await self.az.intent.ensure_joined(room)
+            except Exception:
+                self.log.warning(f"Failed to add bridge bot to new space {room}")
+                # Ensure that the user is invited and joined to the space.
+        try:
+            puppet = await pu.Puppet.get_by_custom_mxid(self.mxid)
+            if puppet and puppet.is_real_user:
+                await puppet.intent.ensure_joined(self.space_mxid)
+        except Exception:
+            self.log.warning(f"Failed to add user to the space {self.space_mxid}")
+
+
 
     async def _search_local(
         self, query: str, max_results: int = 5, min_similarity: int = 45
@@ -1083,7 +1143,10 @@ class User(DBUser, AbstractUser, BaseUser):
         if create:
             cls.log.debug(f"Creating user instance for {mxid}")
             user = cls(mxid)
+            # Log the user
+            cls.log.debug(f"User {mxid} not found in cache or database, creating new instance")
             await user.insert()
+            cls.log.debug(f"User {mxid} created")
             user._add_to_cache()
             return user
 

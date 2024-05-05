@@ -117,6 +117,13 @@ bridge:
     # Localpart template of room aliases for Telegram portal rooms.
     # {groupname} is replaced with the name part of the public channel/group invite link ( https://t.me/{} )
     alias_template: "telegram_{groupname}"
+    # Settings for creating a space for every user.
+    space_support:
+        # Whether or not to enable creating a space per user and inviting the
+        # user (as well as all of the puppets) to that space.
+        enable: false
+        # The name of the space
+        name: "Telegram"
     # Displayname template for Telegram users.
     # {displayname} is replaced with the display name of the Telegram user.
     displayname_template: "{displayname} (Telegram)"

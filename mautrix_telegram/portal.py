@@ -252,6 +252,7 @@ except ImportError:
 if TYPE_CHECKING:
     from .__main__ import TelegramBridge
     from .bot import Bot
+from mautrix.errors import MatrixError
 
 StateBridge = EventType.find("m.bridge", EventType.Class.STATE)
 StateHalfShotBridge = EventType.find("uk.half-shot.bridge", EventType.Class.STATE)
@@ -761,7 +762,13 @@ class Portal(DBPortal, BasePortal):
                         await user.update_direct_chats({self.main_intent.mxid: [self.mxid]})
                 except Exception:
                     self.log.exception("Failed to ensure %s is joined to portal", user.mxid)
-
+            if user.space_mxid and self.mxid:
+                await self.az.intent.send_state_event(
+                    user.space_mxid,
+                    EventType.SPACE_CHILD,
+                    {"via": [self.config["homeserver.domain"]], "suggested": True},
+                    state_key=str(self.mxid),
+                )
         if self.sync_matrix_state:
             await self.main_intent.get_joined_members(self.mxid)
 
@@ -1050,11 +1057,43 @@ class Portal(DBPortal, BasePortal):
                 except Exception:
                     self.log.warning(f"Failed to add bridge bot to new private chat {room_id}")
 
+            if user.space_mxid:
+                self.log.debug(f"Adding chat {room_id} to user's space")
+                try:
+                    await self.az.intent.send_state_event(
+                        user.space_mxid,
+                        EventType.SPACE_CHILD,
+                        {"via": [self.config["homeserver.domain"]], "suggested": True},
+                        state_key=str(self.mxid),
+                    )
+                    self.log.debug(f"Added chat {room_id} to user's space")
+                except Exception:
+                    self.log.warning(f"Failed to add chat {self.mxid} to user's space")
+
             self.mxid = room_id
             self.by_mxid[self.mxid] = self
             await self.save()
             self.log.debug(f"Matrix room created: {self.mxid}")
             await self.az.state_store.set_power_levels(self.mxid, power_levels)
+
+            puppet = await p.Puppet.get_by_custom_mxid(user.mxid)
+            await self.main_intent.invite_user(
+                self.mxid, user.mxid, extra_content=self._get_invite_content(puppet)
+            )
+            if puppet:
+                try:
+                    did_join = await puppet.intent.join_room_by_id(self.mxid)
+                    if did_join:
+                        await user.update_direct_chats({self.main_intent.mxid: [self.mxid]})
+                    if user.space_mxid:
+                        await self.az.intent.invite_user(user.space_mxid, puppet.custom_mxid)
+                        await puppet.intent.join_room_by_id(user.space_mxid)
+                except MatrixError:
+                    self.log.debug(
+                        "Failed to join custom puppet into newly created portal",
+                        exc_info=True,
+                    )
+
             await user.register_portal(self)
             if dialog and isinstance(user, u.User):
                 await user.post_sync_dialog(
@@ -1146,6 +1185,18 @@ class Portal(DBPortal, BasePortal):
             else:
                 join_mxids.add(puppet.intent_for(self).mxid)
 
+            if source.space_mxid:
+                try:
+                    await self.az.intent.invite_user(
+                        source.space_mxid, puppet.custom_mxid or puppet.mxid
+                    )
+                    await puppet.intent.join_room_by_id(source.space_mxid)
+                except Exception as e:
+                    self.log.warning(
+                        f"Failed to invite and join puppet {puppet.tgid} to "
+                        f"space {source.space_mxid}: {e}"
+                    )
+                    
             user = await u.User.get_by_tgid(TelegramID(entity.id))
             if user:
                 if self.mxid:
@@ -1686,6 +1737,13 @@ class Portal(DBPortal, BasePortal):
 
         if self.peer_type == "user":
             await self.main_intent.leave_room(self.mxid)
+            if user.space_mxid:
+                await self.az.intent.send_state_event(
+                    user.space_mxid,
+                    EventType.SPACE_CHILD,
+                    {},
+                    state_key=str(self.mxid),
+                )
             await self.delete()
             try:
                 del self.by_tgid[self.tgid_full]

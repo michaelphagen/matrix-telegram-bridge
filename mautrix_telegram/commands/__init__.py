@@ -10,6 +10,8 @@ from .handler import (
     command_handler,
 )
 
+from .spaces import SECTION_SPACES
+
 # This has to happen after the handler imports
 from . import matrix_auth, portal, telegram  # isort: skip
 
@@ -21,6 +23,7 @@ __all__ = [
     "SECTION_AUTH",
     "SECTION_MISC",
     "SECTION_ADMIN",
+    "SECTION_SPACES",
     "SECTION_CREATING_PORTALS",
     "SECTION_PORTAL_MANAGEMENT",
 ]
